@@ -1,4 +1,4 @@
-pragma solidity ^0.4.25;
+pragma solidity ^0.4.24;
 contract soccerBet {
     //合约所有者
     address private owner = address(0x0);
@@ -142,8 +142,10 @@ contract soccerBet {
     }
     
     //打开投注
-    function openBet(uint _id) onlyAdmin public {
+    function openBet(uint _id, uint _openTime) onlyAdmin public {
         require(GameStatus.original == gameMapping[_id].status, "game is not original status");
+        require(_openTime > gameMapping[_id].gameInfo.stopBetTime, "game is start");
+        
         gameMapping[_id].status = GameStatus.open;
         unWithdrawGameId.push(_id); //  加入为未派奖列表
         
@@ -227,7 +229,7 @@ contract soccerBet {
     }
     
     //派奖提币
-    function allPlayerWithDraw() payable onlyAdmin public returns(uint) {
+    function allPlayerWithDraw() payable onlyAdmin public returns (uint _balance) {
         require(address(this).balance > 0, "balance is empty");
         require(unWithdrawGameId.length > 0, "all game was withdrawed");
         
@@ -244,44 +246,57 @@ contract soccerBet {
             
             result = game.result;
             
-            uint totalBetHostWinAmount = game.betInfo.betHostWinAmout;
-            uint totalBetGuestWinAmount = game.betInfo.betGuestWinAmout;
-            uint totalBetEqualAmount = game.betInfo.betEqualAmout;
-            
             uint rewardAmount = 0;          //待分配奖金，赢家通吃
             uint totalWinnerBetAmount = 0;  //赢家投注总金额
             uint playerReward = 0;          //玩家奖金
             
-            if (result == GameResult.hostTeamWin){  //主队胜
-                rewardAmount = (100-commission) * (totalBetEqualAmount + totalBetGuestWinAmount) / 100;
-                totalWinnerBetAmount = totalBetHostWinAmount;
-            }
-            else if (result == GameResult.guestTeamWin){    //客队胜
-                rewardAmount = (100-commission) * (totalBetEqualAmount + totalBetHostWinAmount) / 100;
-                totalWinnerBetAmount = totalBetGuestWinAmount;
-            }
-            else if (result == GameResult.equal){   //平局
-                rewardAmount = (100-commission) * (totalBetGuestWinAmount + totalBetHostWinAmount) / 100;
-                totalWinnerBetAmount = totalBetEqualAmount;
-            }
+            (rewardAmount, totalWinnerBetAmount) = calculateRewardAmount(unWithdrawGameId[i], result);
             
             for (uint j=0; j<game.betInfo.betPlayerCount; j++){
                 player = game.betPlayerMapping[j];
-                if (player.betStatus == result && player.draw == false){    //获胜并且未分配奖金
+                if (game.betPlayerMapping[j].betStatus == result && game.betPlayerMapping[j].draw == false){    //获胜并且未分配奖金
                     
                     playerReward = (player.amount*1000000/totalWinnerBetAmount * rewardAmount )/1000000 + player.amount;
                     player.addr.transfer(playerReward);
                     player.draw = true;
                 }
             }
-            
+            game.status = GameStatus.withdrawed;
+            delWithdrawGame(unWithdrawGameId[i]);
             emit withDrawEvent(unWithdrawGameId[i], msg.sender, rewardAmount+totalWinnerBetAmount , address(this).balance);
         }
         
         //派奖结束
         game.whoWithDraw = msg.sender;
-        delete unWithdrawGameId;
         return address(this).balance;
+    }
+    
+    //计算比赛待分配奖金
+    function calculateRewardAmount(uint _id, GameResult _whoWin) internal onlyAdmin returns( uint _rewardAmount, uint _winnerBetAmount ) {
+        SoccerGame game = gameMapping[_id];
+        GameResult result = game.result;
+        
+        uint totalBetHostWinAmount = game.betInfo.betHostWinAmout;
+        uint totalBetGuestWinAmount = game.betInfo.betGuestWinAmout;
+        uint totalBetEqualAmount = game.betInfo.betEqualAmout;
+            
+        uint rewardAmount = 0;          //待分配奖金，赢家通吃
+        uint totalWinnerBetAmount = 0;  //赢家投注总金额
+            
+        if (result == GameResult.hostTeamWin){  //主队胜
+            rewardAmount = (100-commission) * (totalBetEqualAmount + totalBetGuestWinAmount) / 100;
+            totalWinnerBetAmount = totalBetHostWinAmount;
+        }
+        else if (result == GameResult.guestTeamWin){    //客队胜
+            rewardAmount = (100-commission) * (totalBetEqualAmount + totalBetHostWinAmount) / 100;
+            totalWinnerBetAmount = totalBetGuestWinAmount;
+        }
+        else if (result == GameResult.equal){   //平局
+            rewardAmount = (100-commission) * (totalBetGuestWinAmount + totalBetHostWinAmount) / 100;
+            totalWinnerBetAmount = totalBetEqualAmount;
+        }
+        
+        return (rewardAmount, totalWinnerBetAmount);
     }
     
     //合约所有者提取收益
@@ -314,14 +329,30 @@ contract soccerBet {
     function delAdmin(address _admin) onlyOwner public {
         require(admins.length > 1, "only one admin");
         require(_admin != owner, "error: cannot delete owner");
-        for (uint i=0; i<admins.length; ++i){
+        for (uint i=0; i<admins.length; i++){
             if (_admin == admins[i]){
                 //前移一位
-                for (uint j=i; j<admins.length-1; ++j){
+                for (uint j=i; j<admins.length-1; j++){
                     admins[j] = admins[j+1];
                 }
                 delete admins[admins.length-1];
                 admins.length--;
+                break;
+            }
+        }
+    }
+    
+    //删除已派奖列表
+    function delWithdrawGame(uint _gameId) internal onlyAdmin {
+        require(unWithdrawGameId.length > 0, "no game unwithdraw");
+        for (uint i=0; i<unWithdrawGameId.length; i++){
+            if (_gameId == unWithdrawGameId[i]){
+                //前移一位
+                for (uint j=i; j<unWithdrawGameId.length-1; j++){
+                    unWithdrawGameId[j] = unWithdrawGameId[j+1];
+                }
+                delete unWithdrawGameId[unWithdrawGameId.length-1];
+                unWithdrawGameId.length--;
                 break;
             }
         }
@@ -344,5 +375,4 @@ contract soccerBet {
     function () external payable{
         emit contractReceiveEvent(msg.value, address(this).balance);
     }
-    
 }
